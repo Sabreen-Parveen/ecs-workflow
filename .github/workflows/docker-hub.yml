@@ -42,8 +42,9 @@
 #           labels: ${{ steps.meta.outputs.labels }}
 
 name: ci
-push:
-  branches: ["master"]
+on:
+  push:
+    branches: ["master"]
 
 jobs:
   docker:
