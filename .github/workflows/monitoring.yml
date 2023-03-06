@@ -1,0 +1,141 @@
+name: PDF Service Image CI
+
+on:
+  push:
+    paths:
+      - services/pdf-service/**
+      - .github/workflows/pdf-image.yml
+
+# These permissions are needed to interact with GitHub's OIDC Token endpoint.
+permissions:
+  id-token: write
+  packages: write
+  contents: read
+
+env:
+  # set this to your preferred AWS region, e.g. us-west-1
+  AWS_REGION: us-east-1
+  # set this to your Amazon ECS service name
+  ECS_SERVICE: dmarc-metrics-exporter
+  # set this to your Amazon ECS cluster name
+  ECS_CLUSTER: sample-cluster
+
+  # set this to the path to your Amazon ECS task definition
+  # file, e.g. .aws/task-definition.json
+  ECS_TASK_DEFINITION: .aws/task-definition-pdf.json
+  # set this to the name of the container in the
+  # containerDefinitions section of your task definition
+  CONTAINER_NAME: librepdf2
+
+jobs:
+  image_publish:
+    runs-on: "ubuntu-22.04"
+    outputs:
+      published-image: ${{ steps.publish-image.outputs.image }}
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        if: github.ref_name == 'main'
+        with:
+          role-to-assume: arn:aws:iam::405493733565:role/Github_Actions_Role
+          role-session-name: githubrolesession
+          aws-region: ${{ env.AWS_REGION }}
+          mask-aws-account-id: "no"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+        if: github.ref_name == 'main'
+
+      - uses: actions/checkout@v3
+      - name: Build the Docker image
+        id: build-image
+        env:
+          GITLAB_TOKEN: ${{ secrets.GITLAB_READ_TOKEN }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd services/pdf-service/
+          TAG=$(cat ./librepdf/package.json | jq '.version' | tr -d '"')
+          if [ "$GITHUB_REF_NAME" != "main" ]; then TAG="$TAG-$GITHUB_REF_NAME"; fi
+          echo "Publishing tag - $TAG"
+          echo "TAG=$TAG" >> $GITHUB_ENV
+          if [ "$GITHUB_REF_NAME" != "main" ]; then BRANCH_TAG="$GITHUB_REF_NAME"; else BRANCH_TAG=latest; fi
+          echo "Publishing tag - $BRANCH_TAG"
+          echo "BRANCH_TAG=$BRANCH_TAG" >> $GITHUB_ENV
+          echo "ECR Registry: $ECR_REGISTRY"
+          if [ ! -z "$ECR_REGISTRY" ]; then ECR_TAG="--tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"; fi
+          GH_TAG="--tag ghcr.io/getfundwave/microservices/pdf:$TAG --tag ghcr.io/getfundwave/microservices/pdf:$BRANCH_TAG"
+          docker build . $ECR_TAG $GH_TAG --platform=linux/amd64 --build-arg GITLAB_TOKEN=$GITLAB_TOKEN
+
+      - name: Publish the docker image
+        id: publish-image
+        env:
+          TOKEN: ${{secrets.GITHUB_TOKEN}}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          echo "Pushing tags $TAG $BRANCH_TAG"
+          echo $TOKEN | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin
+          docker push ghcr.io/getfundwave/microservices/pdf:$TAG 
+          docker push ghcr.io/getfundwave/microservices/pdf:$BRANCH_TAG
+          if [[ ${{ github.ref_name }} = 'main' ]]; then
+            echo "Pushing to ECR with tag $IMAGE_TAG"
+            docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+            echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+            echo "Pushed to ECR"
+            echo "Done"
+          else
+            echo "Not pushing to ECR"
+            echo "Done"
+          fi
+
+  ecs_publish:
+    strategy:
+      matrix:
+        aws_region: [eu-central-1]
+        #aws_region: [eu-central-1,ap-southeast-1,ap-southeast-2]
+    runs-on: "ubuntu-22.04"
+    needs: image_publish
+    if: github.ref_name == 'main'
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::405493733565:role/Github_Actions_Role
+          role-session-name: githubrolesession
+          #aws-account: ${{ matrix.aws_account }}
+          aws-region: ${{ matrix.aws_region }}
+          mask-aws-account-id: "no"
+
+      - name: Update image ID per region
+        id: update-image-for-region
+        env:
+          ORIGINAL_IMAGE: ${{ needs.image_publish.outputs.published-image }}
+          NEW_REGION: ${{ matrix.aws_region }}
+        run: |
+          ORIGINAL_IMAGE=${{ env.ORIGINAL_IMAGE }}
+          NEW_REGION=${{ env.NEW_REGION }}
+          NEW_IMAGE=$(echo "$ORIGINAL_IMAGE" | sed -E "s/(ap|eu|us|sa|me|af)[-](north|south|central|east|west){1,2}[-][0-9]/$NEW_REGION/g")
+          echo "image=$NEW_IMAGE" >> $GITHUB_OUTPUT
+          echo "Done"
+
+      - uses: actions/checkout@v3
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: ${{ env.ECS_TASK_DEFINITION }}
+          container-name: ${{ env.CONTAINER_NAME }}
+          #https://docs.github.com/en/actions/using-jobs/defining-outputs-for-jobs
+          image: ${{ needs.image_publish.outputs.published-image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: ${{ env.ECS_SERVICE }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          wait-for-service-stability: false #took more than 30 minutes on AWS so disabling it

@@ -1,0 +1,28 @@
+{
+  "listen_addr": "0.0.0.0",
+  "port": 9797,
+  "imap": {
+    "host": "imappro.zoho.com",
+    "port": 993,
+    "username": ${imap_username},
+    "password": ${imap_password},
+    "use_ssl": true,
+    "verify_certificate": true
+  },
+  "folders": {
+    "inbox": "INBOX",
+    "done": "Archive",
+    "error": "Invalid"
+  },
+  "storage_path": "/var/lib/dmarc-metrics-exporter",
+  "poll_interval_seconds": 60,
+  "deduplication_max_seconds": 604800,
+  "logging": {
+    "version": 1,
+    "loggers": {
+      "uvicorn": {
+        "level": "INFO"
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+version: "3"
+
+services:
+  sample:
+    # source: https://github.com/jamborjan/dmarc-metrics-exporter/pkgs/container/dmarc-metrics-exporter
+    container_name: dmarc-metrics-exporter
+    build: .
+    environment:
+      - imap_username=sabreen
+      - imap_password=sabreen123
