@@ -4,8 +4,6 @@
   "imap": {
     "host": "imappro.zoho.com",
     "port": 993,
-    "username": ${imap_username},
-    "password": ${imap_password},
     "use_ssl": true,
     "verify_certificate": true
   },
